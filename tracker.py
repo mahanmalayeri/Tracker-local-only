@@ -1,12 +1,9 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, jsonify
 import requests
-import threading
-import time
 from datetime import datetime
+import os
 
 app = Flask(__name__)
-
-# لیست برای ذخیره اطلاعات بازدیدکنندگان
 visitors = []
 
 HTML_TEMPLATE = """
@@ -57,30 +54,35 @@ HTML_TEMPLATE = """
 </html>
 """
 
+def get_real_ip():
+    """IP واقعی (نه Proxy)"""
+    if 'X-Forwarded-For' in request.headers:
+        return request.headers['X-Forwarded-For'].split(',')[0].strip()
+    if 'X-Real-IP' in request.headers:
+        return request.headers['X-Real-IP']
+    return request.remote_addr
+
 def get_location(ip):
-    """دریافت اطلاعات جغرافیایی از IP"""
+    """Location دقیق"""
     try:
-        response = requests.get(f'http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org')
-        data = response.json()
-        if data['status'] == 'success':
-            return {
-                'country': data.get('country', 'N/A'),
-                'city': data.get('city', 'N/A'),
-                'region': data.get('regionName', 'N/A'),
-                'isp': data.get('isp', 'N/A'),
-                'lat': data.get('lat', 'N/A'),
-                'lon': data.get('lon', 'N/A')
-            }
+        resp = requests.get(f'http://ipinfo.io/{ip}/json', timeout=5)
+        data = resp.json()
+        return {
+            'country': data.get('country', 'N/A'),
+            'city': data.get('city', 'N/A'),
+            'region': data.get('region', 'N/A'),
+            'isp': data.get('org', 'N/A'),
+            'lat': data.get('loc', 'N/A').split(',')[0] if data.get('loc') else 'N/A',
+            'lon': data.get('loc', 'N/A').split(',')[1] if data.get('loc') else 'N/A'
+        }
     except:
-        pass
-    return {'country': 'N/A', 'city': 'N/A', 'region': 'N/A', 'isp': 'N/A'}
+        return {'country': 'N/A', 'city': 'N/A', 'region': 'N/A', 'isp': 'N/A'}
 
 @app.route('/', methods=['GET'])
 def track_visitor():
-    # اطلاعات بازدیدکننده
     visitor_info = {
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'ip': request.remote_addr,
+        'ip': get_real_ip(),  # ✅ IP عمومی
         'user_agent': request.headers.get('User-Agent', 'N/A'),
         'referer': request.headers.get('Referer', 'N/A'),
         'language': request.headers.get('Accept-Language', 'N/A'),
@@ -88,44 +90,37 @@ def track_visitor():
         'method': request.method
     }
     
-    # دریافت اطلاعات جغرافیایی
     location = get_location(visitor_info['ip'])
     visitor_info.update(location)
-    
-    # ذخیره اطلاعات
     visitors.append(visitor_info)
-    print("\n" + "="*80)
-    print(f"👤 بازدیدکننده جدید: {visitor_info['ip']}")
-    print(f"🌍 مکان: {visitor_info['city']}, {visitor_info['region']}, {visitor_info['country']}")
-    print(f"🌐 ISP: {visitor_info['isp']}")
-    print(f"📱 User-Agent: {visitor_info['user_agent'][:100]}...")
-    print(f"🔗 Referer: {visitor_info['referer']}")
-    print("="*80)
+    
+    # لاگ کنسول (Render logs)
+    print(f"""
+🔍 NEW VISITOR:
+IP: {visitor_info['ip']}
+🌍 {visitor_info['city']}, {visitor_info['country']}
+📶 ISP: {visitor_info['isp']}
+📱 {visitor_info['user_agent'][:80]}...
+🔗 {visitor_info['referer']}
+    """)
     
     return render_template_string(HTML_TEMPLATE)
 
 @app.route('/visitors')
 def show_visitors():
-    return {
-        'total': len(visitors),
-        'visitors': visitors[-20:]  # 20 بازدید آخر
-    }
+    return jsonify({'total': len(visitors), 'visitors': visitors[-20:]})
 
 @app.route('/visitors.txt')
 def download_visitors():
     content = "VISITORS LOG\n" + "="*50 + "\n\n"
-    for v in visitors[-50:]:  # 50 بازدید آخر
-        content += f"Time: {v['timestamp']}\n"
-        content += f"IP: {v['ip']}\n"
-        content += f"Location: {v['city']}, {v['country']} (ISP: {v['isp']})\n"
-        content += f"User-Agent: {v['user_agent']}\n"
-        content += f"Referer: {v['referer']}\n"
-        content += "-"*30 + "\n"
-    return content, 200, {'Content-Type': 'text/plain', 'Content-Disposition': 'attachment; filename=visitors.txt'}
+    for v in visitors[-50:]:
+        content += f"[{v['timestamp']}] {v['ip']} | {v['city']}, {v['country']}\n"
+        content += f"ISP: {v['isp']} | UA: {v['user_agent'][:60]}\n\n"
+    return content, 200, {
+        'Content-Type': 'text/plain',
+        'Content-Disposition': 'attachment; filename=visitors.txt'
+    }
 
 if __name__ == '__main__':
-    print("🚀 سرور Tracker شروع شد!")
-    print("📱 لینک tracker: http://YOUR_IP:5000")
-    print("📊 لیست بازدید: http://YOUR_IP:5000/visitors")
-    print("📥 دانلود لاگ: http://YOUR_IP:5000/visitors.txt")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
